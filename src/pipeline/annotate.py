@@ -5,11 +5,10 @@ from transformers import AutoTokenizer
 from src.models.emotion_model import EmotionClassifier
 from src.models.tone_model import ToneClassifier
 from src.models.personality_model import PersonalityRegressor
-from src.data.politeness import POLITE_LABELS
-from src.data.essays_big5 import BIG5_TRAITS
 from src.pipeline.aggregation import summarize_emotions
 
-# Static copy of the GoEmotions label set used in our project
+# ----- Static labels so we do not depend on src.data at import time -----
+
 GOEMO_LABELS = [
     "admiration", "amusement", "anger", "annoyance", "approval",
     "caring", "confusion", "curiosity", "desire", "disappointment",
@@ -18,6 +17,11 @@ GOEMO_LABELS = [
     "optimism", "pride", "realization", "relief", "remorse",
     "sadness", "surprise", "neutral"
 ]
+
+POLITE_LABELS = ["impolite", "neutral", "polite"]
+
+BIG5_TRAITS = ["O", "C", "E", "A", "N"]
+
 
 class MoodMosaicPipeline:
     def __init__(self, paths):
