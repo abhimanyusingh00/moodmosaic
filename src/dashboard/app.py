@@ -1,329 +1,537 @@
-import random
+import os
+import sys
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-from src.pipeline.annotate import MoodMosaicPipeline, GOEMO_LABELS
-from src.models.personality_big5 import PersonalityRegressorBig5, BIG5_TRAITS as BIG5_TRAITS_BIG5
+# ---------------------------------------------------------------------
+# Make sure the project root is on sys.path so `src.*` imports work
+# ---------------------------------------------------------------------
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-# Tone labels for the Stanford model (binary)
-TONE_LABELS = ["impolite", "polite"]
+from src.pipeline.annotate import MoodMosaicPipeline
 
-
-# ------------------------------------------------------------------
-# Cached loaders
-# ------------------------------------------------------------------
-@st.cache_resource(show_spinner=True)
-def load_pipeline():
-    # Provide all keys that annotate.py expects.
-    # We still only *display* emotion from this pipeline; tone and
-    # personality for the dashboard come from the new models below.
-    paths = {
-        "emotion": "experiments/checkpoints/emotion/best",
-        "tone": "experiments/checkpoints/tone/best",
-        "personality_sbert": "sentence-transformers/all-mpnet-base-v2",
-        "personality_ckpt": "experiments/checkpoints/personality/best.pt",
-    }
-    return MoodMosaicPipeline(paths)
-
-
-@st.cache_resource(show_spinner=True)
-def load_big5_model():
-    ckpt_path = "experiments/checkpoints/personality_big5/best_big5.pt"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = torch.load(ckpt_path, map_location=device)
-    encoder_name = ckpt.get("encoder_name", "sentence-transformers/all-mpnet-base-v2")
-    model = PersonalityRegressorBig5(encoder_name=encoder_name)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.to(device)
-    model.eval()
-    return model, device
-
-
-@st.cache_resource(show_spinner=True)
-def load_tone_stanford():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = "distilbert-base-uncased"
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        base_model,
-        num_labels=2,
-    )
-    ckpt_path = "experiments/checkpoints/tone_stanford/best_stanford.bin"
-    state = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(state["model_state_dict"])
-    model.to(device)
-    model.eval()
-    return tokenizer, model, device
-
-
-pipe = load_pipeline()
-big5_model, big5_device = load_big5_model()
-tone_tokenizer, tone_model, tone_device = load_tone_stanford()
-
-# ------------------------------------------------------------------
-# Sidebar: description + presets
-# ------------------------------------------------------------------
-st.sidebar.title("MoodMosaic")
-st.sidebar.write(
-    "Paste one message per line to see the emotion mosaic, "
-    "tone labels from a Stanford Politeness model, "
-    "and a Big Five personality sketch."
+# ---------------------------------------------------------------------
+# Page config
+# ---------------------------------------------------------------------
+st.set_page_config(
+    page_title="MoodMosaic Dashboard",
+    page_icon="🎭",
+    layout="wide",
 )
 
-example_choice = st.sidebar.selectbox(
-    "Load an example",
-    [
-        "None",
-        "Positive day",
-        "Frustrated and stressed",
-        "Mixed polite and impolite",
-        "Random personality sample",
-    ],
-)
+# ---------------------------------------------------------------------
+# Global UI styling
+# ---------------------------------------------------------------------
+CUSTOM_CSS = """
+<style>
 
-# Example blocks
-positive_day = """I am really excited about how this semester is going.
+/* Dark background everywhere */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #050816;
+    color: #f5f5f5;
+}
+
+/* Remove default white header band */
+[data-testid="stHeader"] {
+    background: transparent;
+}
+
+/* Remove top decorative bar */
+[data-testid="stDecoration"] {
+    background: transparent;
+}
+
+/* Tighter top padding */
+div.block-container {
+    padding-top: 1.5rem;
+}
+
+/* Sidebar styling */
+[data-testid="stSidebar"] {
+    background-color: #050816;
+    color: #f5f5f5;
+}
+
+/* Links */
+a {
+    color: #93c5fd;
+}
+
+/* Analyze button in red with hover effect */
+div.stButton > button {
+    background-color: #ff4b4b;
+    color: #ffffff;
+    border-radius: 999px;
+    padding: 0.45rem 1.6rem;
+    border: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+div.stButton > button:hover {
+    background-color: #ff6b6b;
+    color: #ffffff;
+}
+
+/* Tabs accent */
+[data-baseweb="tab"] button[aria-selected="true"] {
+    color: #ff6b6b;
+    border-bottom: 2px solid #ff6b6b;
+}
+
+/* Data table header */
+[data-testid="stTable"] th {
+    background-color: #111827;
+    color: #f5f5f5;
+}
+
+/* Labels */
+label {
+    color: #f5f5f5;
+}
+
+/* Radio and select text */
+span[data-baseweb="typo"] {
+    color: #f5f5f5;
+}
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------
+# Example texts
+# ---------------------------------------------------------------------
+SAMPLES: Dict[str, str] = {
+    "Positive day": """I am really excited about how this semester is going.
 I feel proud of the work I put into my projects.
 Thank you so much for helping me with the assignment.
 I am grateful for my friends checking in on me today.
-I am curious to see how far I can push this project."""
+I am curious to see how far I can push this project.""",
 
-frustrated_block = """Today was exhausting and nothing worked the way I expected.
+    "Frustrated and stressed": """Today was exhausting and nothing worked the way I expected.
 I am annoyed that my code keeps breaking right before the deadline.
 This whole situation makes me nervous and a little scared.
 I feel disappointed in myself for not planning better.
-Please just fix this issue, I do not have the energy to debug again."""
+Please just fix this issue, I do not have the energy to debug again.""",
 
-mixed_tone_block = """Could you please review my pull request when you get time.
-Thanks a lot for taking the extra effort on this task.
-This is completely wrong, you did not follow the instructions.
-Why did you ignore my message, this is really upsetting.
-I appreciate your patience and all the feedback you gave me."""
+    "Polite vs impolite mix": """Could you please review this pull request when you have a moment?
+This is wrong, fix it now.
+I really appreciate the detailed feedback you gave me last week.
+You never listen to instructions and it is getting frustrating.
+Thank you again for taking the time to help.""",
 
-# Big Five flavored sentences
-personality_snippets = [
-    "I love learning new ideas and exploring different research topics. I enjoy reading, reflecting, and trying creative approaches in my projects.",
-    "I always plan my work carefully, make detailed schedules, and double check everything before I submit.",
-    "I feel energized when I am around people and I like being the one who starts conversations in group projects.",
-    "I try to be patient and supportive with my teammates, and I care a lot about keeping a friendly atmosphere.",
-    "I often worry about results and deadlines, and sometimes I feel stressed or anxious when things are uncertain.",
-]
+    "Big Five flavored sample": """I love learning new ideas and exploring different research topics.
+I enjoy reading and trying creative approaches in my projects.
+I always plan my work carefully and double check everything.
+I feel energized when I am around people and like starting conversations.
+I often worry about results and deadlines when things are uncertain.""",
+}
 
-if example_choice == "Positive day":
-    default_text = positive_day
-elif example_choice == "Frustrated and stressed":
-    default_text = frustrated_block
-elif example_choice == "Mixed polite and impolite":
-    default_text = mixed_tone_block
-elif example_choice == "Random personality sample":
-    k = random.randint(3, len(personality_snippets))
-    chosen = random.sample(personality_snippets, k=k)
-    default_text = "\n".join(chosen)
-else:
-    default_text = ""
+# ---------------------------------------------------------------------
+# Load models once
+# ---------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading MoodMosaic models...")
+def load_pipeline() -> MoodMosaicPipeline:
+    base_dir = ROOT_DIR
 
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Models: RoBERTa (emotion on GoEmotions), "
-    "DistilBERT (tone on Stanford Politeness), "
-    "SBERT + MLP (personality on Essays Big Five)."
-)
+    # Prefer src/experiments/checkpoints if it exists, else experiments/checkpoints
+    ckpt_dir = os.path.join(base_dir, "src", "experiments", "checkpoints")
+    if not os.path.isdir(ckpt_dir):
+        ckpt_dir = os.path.join(base_dir, "experiments", "checkpoints")
 
-# ------------------------------------------------------------------
-# Main layout
-# ------------------------------------------------------------------
-st.title("MoodMosaic Dashboard")
+    paths = {
+        "emotion": os.path.join(ckpt_dir, "emotion", "best"),
+        # IMPORTANT: directory only; annotate.py appends best_stanford.bin
+        "tone": os.path.join(ckpt_dir, "tone_stanford"),
+        "personality_ckpt": os.path.join(
+            ckpt_dir, "personality_big5", "best_big5.pt"
+        ),
+        "personality_sbert": "sentence-transformers/all-mpnet-base-v2",
+    }
+    pipe = MoodMosaicPipeline(paths)
+    return pipe
 
-col_input, col_meta = st.columns([3, 2])
 
-with col_input:
-    st.subheader("Input text")
-    raw_text = st.text_area(
-        "Enter one message per line:",
-        value=default_text,
-        height=200,
-        label_visibility="collapsed",
+pipe: MoodMosaicPipeline = load_pipeline()
+
+# ---------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------
+def _pick_first(result: Dict[str, Any], keys: List[str]) -> Any:
+    """Return first non-None value for given keys without using `or` on arrays."""
+    for k in keys:
+        if k in result:
+            return result[k]
+    return None
+
+
+def run_pipeline(texts: List[str]) -> Tuple[Dict[str, float], Dict[str, float], pd.DataFrame]:
+    """Call pipeline.annotate and normalize output shapes."""
+    result: Dict[str, Any] = pipe.annotate(texts)
+
+    # ---------- Emotion aggregate ----------
+    emo_candidate = _pick_first(
+        result,
+        ["emotion_agg", "emo_agg", "emotions_agg", "emotion_vector"],
     )
-    analyze_btn = st.button("Analyze")
 
-with col_meta:
-    st.subheader("Session info")
-    st.write("Emotion device:", str(pipe.device))
-    st.write("Tone device:", str(tone_device))
-    st.write("Personality device:", str(big5_device))
-    st.write("Number of emotion labels:", len(GOEMO_LABELS))
-    st.write("Tone classes:", ", ".join(TONE_LABELS))
-    st.write("Personality traits:", ", ".join(BIG5_TRAITS_BIG5))
+    emo_agg: Dict[str, float] = {}
 
-# ------------------------------------------------------------------
-# Helper functions for plots and table
-# ------------------------------------------------------------------
-def build_emotion_summary(per_message):
-    probs = np.array([row["emotion_probs"] for row in per_message])
-    mean_probs = probs.mean(axis=0)
-    dom_idx = probs.argmax(axis=1)
-    dom_labels = [GOEMO_LABELS[i] for i in dom_idx]
-    return mean_probs, dom_labels
+    if isinstance(emo_candidate, dict):
+        emo_agg = {k: float(v) for k, v in emo_candidate.items()}
+    elif emo_candidate is not None:
+        try:
+            arr = np.asarray(emo_candidate).ravel().tolist()
+            labels = result.get("emotion_labels") or result.get("labels") or []
+            if labels and len(labels) == len(arr):
+                emo_agg = {lab: float(val) for lab, val in zip(labels, arr)}
+            else:
+                emo_agg = {f"emo_{i}": float(v) for i, v in enumerate(arr)}
+        except Exception:
+            emo_agg = {}
 
+    # ---------- Personality ----------
+    big5_candidate = _pick_first(result, ["personality", "big5", "big_five"])
+    big5: Dict[str, float] = {}
 
-def build_personality_series_big5(scores_vec):
-    # scores_vec: numpy array of shape (5,) from Big Five model (roughly in [-1, 1])
-    scores_01 = (scores_vec + 1.0) / 2.0
-    return pd.Series(scores_01, index=BIG5_TRAITS_BIG5)
+    if isinstance(big5_candidate, dict):
+        big5 = {k: float(v) for k, v in big5_candidate.items()}
+    elif big5_candidate is not None:
+        try:
+            arr = np.asarray(big5_candidate).ravel().tolist()
+            traits = ["O", "C", "E", "A", "N"]
+            if len(arr) == 5:
+                big5 = {traits[i]: float(arr[i]) for i in range(5)}
+            else:
+                big5 = {f"T{i}": float(v) for i, v in enumerate(arr)}
+        except Exception:
+            big5 = {}
 
+    # ---------- Per message ----------
+    per_df = result.get("per_message") or result.get("per_message_df") or []
 
-def emotion_radar(mean_probs):
-    df = pd.DataFrame(
-        {"emotion": GOEMO_LABELS, "score": mean_probs},
-    )
-    df = df.sort_values("score", ascending=False).head(8)
-    fig = px.line_polar(
-        df,
-        r="score",
-        theta="emotion",
-        line_close=True,
-        range_r=[0, df["score"].max() * 1.1 if df["score"].max() > 0 else 1],
-    )
-    fig.update_traces(fill="toself")
-    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-    return fig
-
-
-def personality_radar(series):
-    df = pd.DataFrame({"trait": series.index, "score": series.values})
-    fig = px.line_polar(
-        df,
-        r="score",
-        theta="trait",
-        line_close=True,
-        range_r=[0, 1],
-    )
-    fig.update_traces(fill="toself")
-    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-    return fig
-
-
-def predict_tone_stanford(messages):
-    enc = tone_tokenizer(
-        messages,
-        truncation=True,
-        padding=True,
-        max_length=128,
-        return_tensors="pt",
-    )
-    enc = {k: v.to(tone_device) for k, v in enc.items()}
-    with torch.no_grad():
-        outputs = tone_model(**enc)
-        logits = outputs.logits
-        preds = torch.argmax(logits, dim=-1)
-    return preds.cpu().numpy()
-
-
-def predict_big5_scores(messages):
-    # messages: list of strings, we join them to one block
-    joined = " ".join(messages)
-    with torch.no_grad():
-        preds = big5_model([joined]).cpu().numpy()[0]
-    return preds
-
-
-def build_per_message_df(texts, dom_emotions, tone_labels):
-    rows = []
-    for text, emo_label, tone_idx in zip(texts, dom_emotions, tone_labels):
-        tone_label = TONE_LABELS[int(tone_idx)] if 0 <= tone_idx < len(TONE_LABELS) else str(
-            tone_idx
-        )
-        rows.append(
-            {
-                "Text": text,
-                "Dominant emotion": emo_label,
-                "Tone": tone_label,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-# ------------------------------------------------------------------
-# Run analysis
-# ------------------------------------------------------------------
-if analyze_btn:
-    lines = [ln.strip() for ln in raw_text.split("\n") if ln.strip()]
-    if not lines:
-        st.warning("Please enter at least one non empty line.")
+    if isinstance(per_df, list):
+        if per_df and isinstance(per_df[0], dict):
+            per_df = pd.DataFrame(per_df)
+        else:
+            per_df = pd.DataFrame({"Text": texts})
+    elif isinstance(per_df, pd.DataFrame):
+        pass
     else:
+        per_df = pd.DataFrame({"Text": texts})
+
+    # Normalize column names
+    col_map = {}
+    for col in per_df.columns:
+        low = col.lower()
+        if low.startswith("text"):
+            col_map[col] = "Text"
+        elif "dominant" in low and "emotion" in low:
+            col_map[col] = "Dominant emotion"
+        elif "tone" in low or "polite" in low:
+            col_map[col] = "Tone"
+    per_df = per_df.rename(columns=col_map)
+
+    return emo_agg, big5, per_df
+
+
+def make_emotion_radar(emo_agg: Dict[str, float]) -> go.Figure:
+    if not emo_agg:
+        fig = go.Figure()
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#050816",
+            plot_bgcolor="#050816",
+            title="Not enough emotion signal yet.",
+        )
+        return fig
+
+    labels = sorted(emo_agg.keys())
+    values = [float(emo_agg.get(lab, 0.0)) for lab in labels]
+
+    # Close loop
+    labels.append(labels[0])
+    values.append(values[0])
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatterpolar(
+            r=values,
+            theta=labels,
+            fill="toself",
+            name="Emotions",
+        )
+    )
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True)),
+        showlegend=False,
+        template="plotly_dark",
+        paper_bgcolor="#050816",
+        plot_bgcolor="#050816",
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    return fig
+
+
+def make_personality_radar(big5: Dict[str, float]) -> go.Figure:
+    if not big5:
+        fig = go.Figure()
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#050816",
+            plot_bgcolor="#050816",
+            title="No personality signal.",
+        )
+        return fig
+
+    order = ["O", "C", "E", "A", "N"]
+    traits = []
+    values = []
+
+    for key in big5.keys():
+        letter = key[0].upper()
+        if letter in order and letter not in traits:
+            traits.append(letter)
+            values.append(float(big5[key]))
+
+    if not traits:
+        traits = list(big5.keys())
+        values = [float(v) for v in big5.values()]
+
+    arr = np.array(values, dtype=float)
+    if arr.min() < 0.0 or arr.max() > 1.0:
+        arr = (arr + 1.0) / 2.0
+    values = arr.tolist()
+
+    traits.append(traits[0])
+    values.append(values[0])
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatterpolar(
+            r=values,
+            theta=traits,
+            fill="toself",
+            name="Personality",
+        )
+    )
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+        showlegend=False,
+        template="plotly_dark",
+        paper_bgcolor="#050816",
+        plot_bgcolor="#050816",
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    return fig
+
+
+def top_emotions_summary(emo_agg: Dict[str, float], k: int = 3, min_score: float = 0.2) -> str:
+    if not emo_agg:
+        return "not enough signal yet."
+
+    items = sorted(emo_agg.items(), key=lambda x: x[1], reverse=True)
+    filtered = [lab for lab, score in items if score >= min_score]
+    if not filtered:
+        filtered = [lab for lab, _ in items[:k]]
+
+    return ", ".join(filtered[:k])
+
+
+def personality_summary(big5: Dict[str, float], k: int = 2) -> str:
+    if not big5:
+        return "none."
+
+    items = sorted(big5.items(), key=lambda x: x[1], reverse=True)
+    letters = [key[0].upper() for key, _ in items[:k]]
+    return ", ".join(letters)
+
+
+# ---------------------------------------------------------------------
+# Main app
+# ---------------------------------------------------------------------
+def main() -> None:
+    # Sidebar
+    with st.sidebar:
+        st.markdown("### MoodMosaic")
+        st.write(
+            "Explore how language reflects emotions, politeness tone, "
+            "and a simple Big Five personality sketch. Paste text or upload a CSV."
+        )
+
+        input_mode = st.radio(
+            "Input mode",
+            ["Text box", "CSV upload"],
+            index=0,
+        )
+
+        st.markdown("---")
+        sample_name = st.selectbox(
+            "Load an example",
+            list(SAMPLES.keys()),
+            index=0,
+        )
+
+        st.markdown("---")
+        st.markdown(
+            "Models: RoBERTa (emotion), DistilBERT (tone), "
+            "SBERT plus MLP (personality)."
+        )
+
+    st.markdown("## MoodMosaic Dashboard")
+
+    col_input, col_info = st.columns([3, 2])
+
+    # Input column
+    with col_input:
+        st.markdown("### Input text")
+
+        if input_mode == "Text box":
+            default_text = SAMPLES[sample_name]
+            raw = st.text_area(
+                "",
+                value=default_text,
+                height=220,
+                help="Enter one message per line.",
+            )
+            texts = [line.strip() for line in raw.splitlines() if line.strip()]
+        else:
+            uploaded = st.file_uploader("Upload CSV", type=["csv"])
+            texts: List[str] = []
+            if uploaded is not None:
+                df = pd.read_csv(uploaded)
+                text_col = "text"
+                if text_col not in df.columns:
+                    text_col = df.columns[0]
+                texts = [str(t).strip() for t in df[text_col].tolist() if str(t).strip()]
+            raw = "\n".join(texts)
+
+        analyze_clicked = st.button("Analyze")
+
+    # Session info column
+    with col_info:
+        st.markdown("### Session info")
+        device = "cpu"
+        st.write(f"Device: **{device}**")
+        st.write("Number of emotion labels: **28**")
+        st.write("Tone classes: **impolite, neutral, polite**")
+        st.write("Personality traits: **O, C, E, A, N**")
+        if input_mode == "Text box":
+            st.write(f"Messages detected: **{len(texts)}**")
+        else:
+            st.write(f"Messages from CSV: **{len(texts)}**")
+
+    st.markdown("---")
+
+    if analyze_clicked:
+        if not texts:
+            st.warning("Please enter at least one message or upload a CSV.")
+            return
+
         with st.spinner("Running MoodMosaic pipeline..."):
-            # Use pipeline for emotion only
-            result = pipe.analyze_messages(lines)
-
-        per_message = result["per_message"]
-        emo_mean, dom_emotions = build_emotion_summary(per_message)
-
-        # New tone and personality from real models
-        tone_preds = predict_tone_stanford(lines)
-        big5_vec = predict_big5_scores(lines)
-        personality = build_personality_series_big5(big5_vec)
-
-        df_msgs = build_per_message_df(lines, dom_emotions, tone_preds)
-
-        # Quick text summary
-        top_emo_idx = emo_mean.argsort()[::-1][:3]
-        top_emos = [GOEMO_LABELS[i] for i in top_emo_idx]
-        top_trait_idx = personality.values.argsort()[::-1][:2]
-        top_traits = [personality.index[i] for i in top_trait_idx]
+            emo_agg, big5, per_df = run_pipeline(texts)
 
         st.markdown("### Summary")
+
+        emo_summary = top_emotions_summary(emo_agg, k=3, min_score=0.2)
         st.write(
-            f"Top emotions across all messages: **{', '.join(top_emos)}**."
-        )
-        st.write(
-            "Strongest personality traits (approximate, Essays Big Five): "
-            f"**{', '.join(top_traits)}**."
+            "Top emotions across all messages: "
+            f"**{emo_summary}**."
         )
 
-        # Tabs: Summary vs Per message details
-        tab_summary, tab_details = st.tabs(["Overview", "Per message details"])
+        pers_summary = personality_summary(big5, k=2)
+        st.write(
+            "Strongest personality traits approximate: "
+            f"**{pers_summary}**."
+        )
 
-        with tab_summary:
+        st.markdown("")
+
+        tab_overview, tab_per = st.tabs(["Overview", "Per message details"])
+
+        with tab_overview:
             col_emo, col_pers = st.columns(2)
+
             with col_emo:
-                st.subheader("Emotion mosaic")
-                st.plotly_chart(emotion_radar(emo_mean), use_container_width=True)
+                st.markdown("#### Emotion mosaic")
+                emo_fig = make_emotion_radar(emo_agg)
+                st.plotly_chart(emo_fig, use_container_width=True)
+
             with col_pers:
-                st.subheader("Personality profile (Big Five)")
-                st.plotly_chart(personality_radar(personality), use_container_width=True)
+                st.markdown("#### Personality profile")
+                pers_fig = make_personality_radar(big5)
+                st.plotly_chart(pers_fig, use_container_width=True)
 
-        with tab_details:
-            st.subheader("Per message analysis")
+        with tab_per:
+            st.markdown("### Per message analysis")
 
-            col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                tone_filter = st.multiselect(
-                    "Filter by tone (Stanford)",
-                    options=TONE_LABELS,
-                    default=TONE_LABELS,
+            if "Text" not in per_df.columns:
+                per_df["Text"] = texts
+            if "Dominant emotion" not in per_df.columns:
+                per_df["Dominant emotion"] = ""
+            if "Tone" not in per_df.columns:
+                per_df["Tone"] = ""
+
+            tone_options = sorted(
+                [t for t in per_df["Tone"].unique().tolist() if t]
+            )
+            emo_options = sorted(
+                [
+                    e
+                    for e in per_df["Dominant emotion"]
+                    .unique()
+                    .tolist()
+                    if e
+                ]
+            )
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.caption("Filter by tone")
+                selected_tones = st.multiselect(
+                    "",
+                    options=tone_options,
+                    default=tone_options,
                 )
-            with col_f2:
-                emo_filter = st.multiselect(
-                    "Filter by dominant emotion",
-                    options=sorted(set(dom_emotions)),
-                    default=sorted(set(dom_emotions)),
+
+            with c2:
+                st.caption("Filter by dominant emotion")
+                selected_emos = st.multiselect(
+                    "",
+                    options=emo_options,
+                    default=emo_options,
                 )
 
-            df_filtered = df_msgs[
-                df_msgs["Tone"].isin(tone_filter)
-                & df_msgs["Dominant emotion"].isin(emo_filter)
-            ]
-            st.dataframe(df_filtered, use_container_width=True, height=300)
+            filtered = per_df.copy()
+            if selected_tones:
+                filtered = filtered[filtered["Tone"].isin(selected_tones)]
+            if selected_emos:
+                filtered = filtered[
+                    filtered["Dominant emotion"].isin(selected_emos)
+                ]
 
-            with st.expander("Show full table (no filters)"):
-                st.dataframe(df_msgs, use_container_width=True, height=300)
-else:
-    st.info(
-        "Enter one message per line on the left, optionally choose a preset example "
-        "in the sidebar, and click **Analyze** to see the mood mosaic."
-    )
+            st.dataframe(
+                filtered[["Text", "Dominant emotion", "Tone"]],
+                use_container_width=True,
+                height=320,
+            )
+
+            with st.expander("Show full table without filters"):
+                st.dataframe(
+                    per_df[["Text", "Dominant emotion", "Tone"]],
+                    use_container_width=True,
+                    height=320,
+                )
+
+
+if __name__ == "__main__":
+    main()
