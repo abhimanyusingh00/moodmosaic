@@ -178,16 +178,14 @@ Contributions via issues and pull requests are welcome.
 ## 
 
 ## Screenshots and Visual Overview
-
-### 1. Overall system pipeline
-
-High-level architecture: text input → preprocessing → per-message models → aggregation → personality → dashboard.
-
-```markdown
-![System pipeline diagram](pipeline_overview.png)
 ![Dashboard overview with emotion + Big Five radar charts](dashboard_overview.png)
 ![Per-message details table](dashboard_message_table.png)
 ![Emotion radar chart over GoEmotions labels](emotion_radar.png)
 ![Big Five personality radar chart](personality_radar.png)
+
+
+## Overall system pipeline
+
+High-level architecture: text input → preprocessing → per-message models → aggregation → personality → dashboard.
 
 
