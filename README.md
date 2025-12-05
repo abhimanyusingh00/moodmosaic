@@ -184,11 +184,10 @@ Contributions via issues and pull requests are welcome.
 High-level architecture: text input → preprocessing → per-message models → aggregation → personality → dashboard.
 
 ```markdown
-![System pipeline diagram](docs/img/pipeline_overview.png)
-![Dashboard overview with emotion + Big Five radar charts](docs/img/dashboard_overview.png)
-![Per-message details table](docs/img/dashboard_message_table.png)
-![Emotion radar chart over GoEmotions labels](docs/img/emotion_radar.png)
-![Big Five personality radar chart](docs/img/personality_radar.png)
-![Big Five personality radar chart](docs/img/personality_radar.png)
+![System pipeline diagram](pipeline_overview.png)
+![Dashboard overview with emotion + Big Five radar charts](dashboard_overview.png)
+![Per-message details table](dashboard_message_table.png)
+![Emotion radar chart over GoEmotions labels](emotion_radar.png)
+![Big Five personality radar chart](personality_radar.png)
 
 
