@@ -72,7 +72,7 @@ class MoodMosaicPipeline:
         )
         emo_state = torch.load(emo_ckpt, map_location=self.device)
 
-        # Training script might have wrapped this in a dict
+       
         if isinstance(emo_state, dict) and "model_state_dict" in emo_state:
             emo_state = emo_state["model_state_dict"]
 
@@ -186,7 +186,7 @@ class MoodMosaicPipeline:
             if isinstance(first, dict):
                 return self._personality_to_vector(first)
 
-        # Fallback: try to coerce to array of numbers
+        
         try:
             arr = np.array(out, dtype=float).reshape(-1)
             if arr.size >= len(BIG5_TRAITS):
