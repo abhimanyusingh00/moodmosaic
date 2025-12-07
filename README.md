@@ -18,15 +18,10 @@ The goal is not clinical-level prediction, but a clear analytic view that feels 
 1. [Project Overview](#project-overview)
 2. [Main Features](#MainFeatures)
 3. [Data and Tasks](#data-and-tasks)  
-4. [Screenshots and Visual Overview](#screenshots-and-visual-overview)
-5. [Installation](#installation)  
-6. [Data and Checkpoints Setup](#data-and-checkpoints-setup)  
-7. [Training the Models](#training-the-models)  
-8. [Running the Dashboard](#running-the-dashboard)  
-9. [Using the Dashboard](#using-the-dashboard)  
-10. [Experiments and Results](#experiments-and-results)  
-11. [Limitations and Ethics](#limitations-and-ethics)  
-12. [Future Work](#future-work)  
+4. [Screenshots and Visual Overview](#screenshots-and-visual-overview) 
+5. [Using the Dashboard](#using-the-dashboard)   
+6. [Limitations and Ethics](#limitations-and-ethics)  
+7. [Future Work](#future-work)  
 ---
 
 ## Project Overview
